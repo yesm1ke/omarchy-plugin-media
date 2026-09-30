@@ -33,6 +33,9 @@ Item {
   readonly property string album: activePlayer && activePlayer.trackAlbum ? activePlayer.trackAlbum : ""
   readonly property string artUrl: activePlayer && activePlayer.trackArtUrl ? activePlayer.trackArtUrl : ""
   readonly property string identity: activePlayer ? (activePlayer.identity || activePlayer.desktopEntry || "") : ""
+  readonly property bool cliampRunning: players.some(function(p) {
+    return p && String(p.identity || "").toLowerCase() === "cliamp"
+  })
 
   function isProxyPlayer(player) {
     return MediaModel.isProxyPlayer(player)

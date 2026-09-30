@@ -5,11 +5,16 @@ import qs.Commons
 
 BarWidget {
   id: root
-  moduleName: "omarchy.media"
+  moduleName: "io.github.yesm1ke.media"
 
-  readonly property var mediaService: bar?.shell?.firstPartyServiceFor("omarchy.media")
+  readonly property var mediaService: bar?.shell?.firstPartyServiceFor("io.github.yesm1ke.media")
   readonly property var activePlayer: mediaService ? mediaService.activePlayer : null
   readonly property var sourcePlayers: mediaService ? mediaService.sourcePlayers : []
+  readonly property bool cliampRunning: mediaService ? mediaService.cliampRunning : false
+
+  function startCliamp() {
+    if (root.bar) root.bar.run("cliamp -d")
+  }
 
   readonly property bool hasMedia: activePlayer !== null && (activePlayer.trackTitle || activePlayer.trackArtist)
   readonly property string playIcon: activePlayer && activePlayer.isPlaying ? "󰏤" : "󰐊"
@@ -17,12 +22,80 @@ BarWidget {
   readonly property string artist: activePlayer ? (activePlayer.trackArtist || "") : ""
 
   property bool popupOpen: false
+  property bool hovered: false
 
+  // Panel-hotkey contract (SUPER+CTRL+1-9 / Bar.qml:findPanelWidget): a widget
+  // only gets a slot number if it exposes open()/close()/opened under those
+  // exact names, which popupOpen isn't.
+  readonly property bool opened: popupOpen
+  function open() { popupOpen = true }
   function close() { popupOpen = false }
-  property real maxLabelWidth: 180
+  property real maxLabelWidth: 200
 
-  visible: hasMedia
-  implicitWidth: hasMedia ? row.implicitWidth + Style.space(14) : 0
+  // Keyboard navigation inside the popup: a flat cursor over prev/playPause/
+  // next, then Start Cliamp (only while it's actually offered), then the
+  // source-player rows (only when there's more than one, matching their
+  // existing visibility). PopupCard/PopupWindow (xdg-popup) never receives
+  // key events unless a click already routed focus through the parent
+  // surface first, which is why Escape and arrow keys did nothing when the
+  // popup was opened via SUPER+CTRL+1 -- KeyboardPanel below exists
+  // specifically to grab focus on open instead.
+  property int cursorIndex: 0
+  property bool cursorActive: false
+  readonly property int startCliampIndex: 3
+  readonly property int sourceBaseIndex: cliampRunning ? 3 : 4
+  readonly property int sourceCount: sourcePlayers.length > 1 ? sourcePlayers.length : 0
+  readonly property int cursorCount: 3 + (cliampRunning ? 0 : 1) + sourceCount
+
+  onPopupOpenChanged: {
+    if (!popupOpen) return
+    cursorActive = false
+    cursorIndex = 0
+    Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
+  }
+
+  function moveCursor(dx, dy) {
+    cursorActive = true
+    var n = root.cursorCount
+    if (n <= 0) return
+    var delta = dy !== 0 ? dy : dx
+    cursorIndex = ((cursorIndex + delta) % n + n) % n
+  }
+
+  function activateCursor() {
+    cursorActive = true
+    var i = cursorIndex
+    if (i === 0) {
+      if (root.activePlayer && root.activePlayer.canGoPrevious && root.mediaService)
+        root.mediaService.runAction("previous", false, root.mediaService.playerKey(root.activePlayer))
+      return
+    }
+    if (i === 1) {
+      if (root.activePlayer && (root.activePlayer.canTogglePlaying || root.activePlayer.canPlay || root.activePlayer.canPause) && root.mediaService)
+        root.mediaService.runAction("playPause", false, root.mediaService.playerKey(root.activePlayer))
+      return
+    }
+    if (i === 2) {
+      if (root.activePlayer && root.activePlayer.canGoNext && root.mediaService)
+        root.mediaService.runAction("next", false, root.mediaService.playerKey(root.activePlayer))
+      return
+    }
+    if (!root.cliampRunning && i === root.startCliampIndex) {
+      root.startCliamp()
+      return
+    }
+    var sourceIndex = i - root.sourceBaseIndex
+    if (sourceIndex >= 0 && sourceIndex < root.sourcePlayers.length) {
+      var player = root.sourcePlayers[sourceIndex]
+      if (root.mediaService && player) root.mediaService.selectPlayer(root.mediaService.playerKey(player))
+    }
+  }
+
+  // Always visible (not gated on hasMedia) so there's a click target to start
+  // Cliamp from cold -- otherwise there'd be nothing on the bar to click when
+  // no player is running at all.
+  visible: true
+  implicitWidth: row.implicitWidth + Style.space(14)
   implicitHeight: barSize
 
   Row {
@@ -46,11 +119,15 @@ BarWidget {
 
     Item {
       id: scrollClip
-      width: Math.min(root.maxLabelWidth, labelText.implicitWidth)
+      width: root.hovered ? Math.min(root.maxLabelWidth, labelText.implicitWidth) : 0
       height: glyph.height
       clip: true
       anchors.verticalCenter: parent.verticalCenter
-      visible: !root.bar.vertical && root.title !== ""
+      visible: !root.bar.vertical && root.title !== "" && root.hovered
+
+      Behavior on width {
+        NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+      }
 
       Text {
         id: labelText
@@ -65,7 +142,7 @@ BarWidget {
 
         NumberAnimation on x {
           id: scrollAnim
-          running: labelText.needsScroll && !root.popupOpen && !root.bar.vertical
+          running: root.hovered && labelText.needsScroll && !root.popupOpen && !root.bar.vertical
           loops: Animation.Infinite
           duration: Math.max(6000, labelText.implicitWidth * 25)
           from: scrollClip.width
@@ -79,15 +156,20 @@ BarWidget {
   MouseArea {
     anchors.fill: parent
     hoverEnabled: true
-    cursorShape: root.activePlayer ? Qt.PointingHandCursor : Qt.ArrowCursor
+    cursorShape: Qt.PointingHandCursor
     acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
 
     onClicked: function(mouse) {
+      // Right click always opens the popup -- it's the only way to reach the
+      // Start Cliamp button when nothing is playing yet. Left/middle click
+      // still need a real player to act on.
+      if (mouse.button === Qt.RightButton) {
+        root.popupOpen = !root.popupOpen
+        return
+      }
       if (!root.activePlayer) return
       if (mouse.button === Qt.MiddleButton) {
         if (root.mediaService) root.mediaService.runAction("next", false)
-      } else if (mouse.button === Qt.RightButton) {
-        root.popupOpen = !root.popupOpen
       } else {
         if (root.mediaService) root.mediaService.runAction("playPause", false)
       }
@@ -97,18 +179,26 @@ BarWidget {
       if (wheel.angleDelta.y > 0 && root.mediaService) root.mediaService.runAction("previous", false)
       else if (wheel.angleDelta.y < 0 && root.mediaService) root.mediaService.runAction("next", false)
     }
-    onEntered: if (root.bar) root.bar.showTooltip(root, root.hasMedia ? (root.title + (root.artist ? " — " + root.artist : "")) : "")
-    onExited: if (root.bar) root.bar.hideTooltip(root)
+    onEntered: root.hovered = true
+    onExited: root.hovered = false
   }
 
-  PopupCard {
+  KeyboardPanel {
     id: popup
     anchorItem: root
     bar: root.bar
     owner: root
     open: root.popupOpen
+    focusTarget: keyCatcher
     contentWidth: popup.fittedContentWidth(Style.space(320))
     contentHeight: popup.fittedContentHeight(column.implicitHeight)
+
+    PanelKeyCatcher {
+      id: keyCatcher
+      anchors.fill: parent
+      onMoveRequested: function(dx, dy) { root.moveCursor(dx, dy) }
+      onActivateRequested: root.activateCursor()
+      onCloseRequested: root.close()
 
     Column {
       id: column
@@ -195,6 +285,7 @@ BarWidget {
           verticalPadding: Style.spacing.controlPaddingY
           enabled: root.activePlayer && root.activePlayer.canGoPrevious
           opacity: enabled ? 1.0 : 0.4
+          hasCursor: root.cursorActive && root.cursorIndex === 0
           onClicked: if (root.mediaService) root.mediaService.runAction("previous", false, root.mediaService.playerKey(root.activePlayer))
         }
 
@@ -206,6 +297,7 @@ BarWidget {
           iconSize: Style.font.iconLarge
           enabled: root.activePlayer && (root.activePlayer.canTogglePlaying || root.activePlayer.canPlay || root.activePlayer.canPause)
           opacity: enabled ? 1.0 : 0.4
+          hasCursor: root.cursorActive && root.cursorIndex === 1
           onClicked: if (root.mediaService) root.mediaService.runAction("playPause", false, root.mediaService.playerKey(root.activePlayer))
         }
 
@@ -216,8 +308,20 @@ BarWidget {
           verticalPadding: Style.spacing.controlPaddingY
           enabled: root.activePlayer && root.activePlayer.canGoNext
           opacity: enabled ? 1.0 : 0.4
+          hasCursor: root.cursorActive && root.cursorIndex === 2
           onClicked: if (root.mediaService) root.mediaService.runAction("next", false, root.mediaService.playerKey(root.activePlayer))
         }
+      }
+
+      Button {
+        text: "Start Cliamp"
+        visible: !root.cliampRunning
+        foreground: root.bar.foreground
+        horizontalPadding: Style.spacing.controlPaddingX
+        verticalPadding: Style.spacing.controlPaddingY
+        width: parent.width
+        hasCursor: root.cursorActive && root.cursorIndex === root.startCliampIndex
+        onClicked: root.startCliamp()
       }
 
       PanelSeparator {
@@ -237,10 +341,12 @@ BarWidget {
           BorderSurface {
             id: sourceRow
             required property var modelData
+            required property int index
 
             readonly property var player: modelData
             readonly property bool selected: root.activePlayer && player
               && root.mediaService.playerKey(root.activePlayer) === root.mediaService.playerKey(player)
+            readonly property bool cursorHere: root.cursorActive && root.cursorIndex === (root.sourceBaseIndex + index)
             readonly property string sourceTitle: player ? (player.trackTitle || player.identity || player.desktopEntry || "Media source") : "Media source"
             readonly property string sourceDetail: player && player.trackArtist ? player.trackArtist : (player && player.identity ? player.identity : "")
 
@@ -248,7 +354,8 @@ BarWidget {
             height: sourceInner.implicitHeight + Style.space(10)
             radius: Style.spacing.labelGap
             color: selected ? Style.selectedFillFor(root.bar.foreground, Color.accent) : "transparent"
-            borderSpec: selected ? Border.controlSpec("normal", root.bar.foreground, Color.accent) : Border.none()
+            borderSpec: selected ? Border.controlSpec("normal", root.bar.foreground, Color.accent)
+              : (cursorHere ? Border.controlSpec("focus", root.bar.foreground, Color.accent) : Border.none())
 
             Row {
               id: sourceInner
@@ -308,6 +415,7 @@ BarWidget {
           }
         }
       }
+    }
     }
   }
 }
