@@ -1,0 +1,98 @@
+#!/bin/bash
+# Merge the stock Omarchy plugin this clone was made from into it.
+#
+# The repository keeps two branches:
+#   upstream  the stock plugin files exactly as Omarchy ships them, one commit
+#             per Omarchy version that changed them
+#   main      upstream plus this clone's own changes
+#
+# Running this copies the installed stock plugin into `upstream` (committing
+# only if something changed) and merges `upstream` into `main`, so upstream
+# fixes land in the clone as an ordinary git merge. On a conflict the merge is
+# aborted and the working tree is left exactly as it was; resolve it by hand
+# with `git merge upstream`.
+#
+# Usage: ./sync-upstream [--check]
+#   --check   report whether the stock plugin changed, touch nothing
+#
+# Exit status: 0 up to date or merged, 1 error, 2 merge conflict,
+# 3 (--check only) stock plugin changed.
+set -euo pipefail
+
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+omarchy_path="${OMARCHY_PATH:-/usr/share/omarchy}"
+stock_root="$omarchy_path/shell/plugins"
+check_only=0
+[[ ${1:-} == --check ]] && check_only=1
+
+die() {
+  echo "sync-upstream: $*" >&2
+  exit 1
+}
+
+git_repo() { git -C "$repo" "$@"; }
+
+command -v jq >/dev/null || die "jq is required"
+source_id=$(jq -r '.omarchy.clonedFrom // empty' "$repo/manifest.json")
+[[ -n $source_id ]] || die "manifest.json has no omarchy.clonedFrom"
+# A fresh clone only has origin/upstream; give it the local branch to commit to.
+if ! git_repo rev-parse --verify -q refs/heads/upstream >/dev/null; then
+  git_repo rev-parse --verify -q refs/remotes/origin/upstream >/dev/null || die "no 'upstream' branch"
+  git_repo branch -q upstream origin/upstream
+fi
+
+# The stock plugin owns a directory with a manifest.json carrying its id.
+stock_dir=""
+while IFS= read -r manifest; do
+  if [[ $(jq -r '.id // empty' "$manifest" 2>/dev/null) == "$source_id" ]]; then
+    stock_dir=$(dirname "$manifest")
+    break
+  fi
+done < <(find "$stock_root" -name manifest.json)
+[[ -n $stock_dir ]] || die "stock plugin $source_id not found under $stock_root"
+
+version=$(pacman -Q omarchy 2>/dev/null | awk '{print $2}' || true)
+version=${version:-unknown}
+
+# Compare the stock files with the tip of `upstream` without touching the
+# working tree: build a tree object from a scratch index.
+scratch_index=$(mktemp)
+trap 'rm -f "$scratch_index"' EXIT
+export GIT_INDEX_FILE=$scratch_index
+git_repo read-tree --empty
+while IFS= read -r -d '' file; do
+  rel=${file#"$stock_dir"/}
+  blob=$(git_repo hash-object -w -- "$file")
+  mode=100644
+  [[ -x $file ]] && mode=100755
+  git_repo update-index --add --cacheinfo "$mode,$blob,$rel"
+done < <(find "$stock_dir" -type f -print0 | sort -z)
+stock_tree=$(git_repo write-tree)
+unset GIT_INDEX_FILE
+
+if [[ $stock_tree == $(git_repo rev-parse 'upstream^{tree}') ]]; then
+  echo "$source_id: upstream already matches Omarchy $version"
+  if (( ! check_only )) && ! git_repo merge-base --is-ancestor upstream HEAD; then
+    : # fall through to merge an upstream commit made earlier
+  else
+    exit 0
+  fi
+elif (( check_only )); then
+  echo "$source_id: stock plugin changed (Omarchy $version)"
+  exit 3
+else
+  commit=$(git_repo commit-tree "$stock_tree" -p upstream -m "Omarchy $version: stock $source_id")
+  git_repo update-ref refs/heads/upstream "$commit"
+  echo "$source_id: recorded Omarchy $version on upstream"
+fi
+
+[[ $(git_repo symbolic-ref --short -q HEAD) == main ]] || die "check out main before syncing"
+git_repo diff --quiet && git_repo diff --cached --quiet || die "uncommitted changes in $repo"
+
+if git_repo merge --no-edit -q -m "Merge Omarchy $version into main" upstream; then
+  echo "$source_id: merged into main"
+else
+  git_repo merge --abort
+  echo "$source_id: CONFLICT merging Omarchy $version; main left unchanged (run: git -C $repo merge upstream)" >&2
+  exit 2
+fi
