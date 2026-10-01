@@ -95,13 +95,33 @@ BarWidget {
   // Cliamp from cold -- otherwise there'd be nothing on the bar to click when
   // no player is running at all.
   visible: true
-  implicitWidth: row.implicitWidth + Style.space(14)
   implicitHeight: barSize
+
+  // Title reveal, done the way the stock tray drawer does it: one eased
+  // progress value (same 600 ms OutCubic), everything else derived from it and
+  // snapped to whole pixels. Animating the clip width directly, centring the
+  // row and toggling `visible` made the bar relayout at fractional offsets,
+  // cut the collapse short and restart the scroll mid-reveal.
+  readonly property int animationDuration: 600
+  readonly property bool showLabel: !root.bar.vertical && root.title !== ""
+  readonly property int labelExtent: showLabel ? Math.ceil(Math.min(root.maxLabelWidth, labelText.implicitWidth)) : 0
+  property real revealProgress: root.hovered && showLabel ? 1 : 0
+  readonly property int revealExtent: Math.round(labelExtent * revealProgress)
+  readonly property bool revealed: revealProgress >= 1
+
+  Behavior on revealProgress {
+    NumberAnimation { duration: root.animationDuration; easing.type: Easing.OutCubic }
+  }
+
+  readonly property int padding: Math.round(Style.space(7))
+  implicitWidth: padding * 2 + Math.ceil(glyph.implicitWidth)
+    + (revealExtent > 0 ? Math.round(Style.space(6)) + revealExtent : 0)
 
   Row {
     id: row
-    anchors.centerIn: parent
-    spacing: Style.space(6)
+    x: root.padding
+    anchors.verticalCenter: parent.verticalCenter
+    spacing: root.revealExtent > 0 ? Math.round(Style.space(6)) : 0
 
     Text {
       id: glyph
@@ -119,15 +139,11 @@ BarWidget {
 
     Item {
       id: scrollClip
-      width: root.hovered ? Math.min(root.maxLabelWidth, labelText.implicitWidth) : 0
+      width: root.revealExtent
       height: glyph.height
       clip: true
       anchors.verticalCenter: parent.verticalCenter
-      visible: !root.bar.vertical && root.title !== "" && root.hovered
-
-      Behavior on width {
-        NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
-      }
+      visible: root.revealExtent > 0
 
       Text {
         id: labelText
@@ -137,17 +153,30 @@ BarWidget {
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.body
         anchors.verticalCenter: parent.verticalCenter
+        x: 0
 
-        property bool needsScroll: implicitWidth > scrollClip.width
+        property bool needsScroll: implicitWidth > root.labelExtent
 
-        NumberAnimation on x {
+        // Scroll only once the reveal has finished, starting from the resting
+        // position, and snap back when it stops so the next reveal starts clean.
+        SequentialAnimation {
           id: scrollAnim
-          running: root.hovered && labelText.needsScroll && !root.popupOpen && !root.bar.vertical
+          running: root.revealed && root.hovered && labelText.needsScroll && !root.popupOpen
           loops: Animation.Infinite
-          duration: Math.max(6000, labelText.implicitWidth * 25)
-          from: scrollClip.width
-          to: -labelText.implicitWidth
-          easing.type: Easing.Linear
+          onRunningChanged: if (!running) labelText.x = 0
+          PauseAnimation { duration: 1200 }
+          NumberAnimation {
+            target: labelText; property: "x"
+            from: 0; to: -labelText.implicitWidth
+            duration: Math.max(3000, labelText.implicitWidth * 25)
+            easing.type: Easing.Linear
+          }
+          NumberAnimation {
+            target: labelText; property: "x"
+            from: root.labelExtent; to: 0
+            duration: Math.max(1000, root.labelExtent * 25)
+            easing.type: Easing.Linear
+          }
         }
       }
     }
