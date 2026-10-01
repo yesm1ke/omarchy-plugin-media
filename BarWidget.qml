@@ -12,8 +12,12 @@ BarWidget {
   readonly property var sourcePlayers: mediaService ? mediaService.sourcePlayers : []
   readonly property bool cliampRunning: mediaService ? mediaService.cliampRunning : false
 
-  function startCliamp() {
-    if (root.bar) root.bar.run("cliamp -d")
+  // Starts Cliamp's TUI in a background tmux session if needed and opens a
+  // terminal on it; closing that window leaves playback running.
+  readonly property string cliampSession: String(Qt.resolvedUrl("cliamp-session")).replace(/^file:\/\//, "")
+
+  function openCliamp() {
+    if (root.bar) root.bar.run("'" + root.cliampSession + "' open")
   }
 
   readonly property bool hasMedia: activePlayer !== null && (activePlayer.trackTitle || activePlayer.trackArtist)
@@ -33,7 +37,7 @@ BarWidget {
   property real maxLabelWidth: 200
 
   // Keyboard navigation inside the popup: a flat cursor over prev/playPause/
-  // next, then Start Cliamp (only while it's actually offered), then the
+  // next, then Open Cliamp, then the
   // source-player rows (only when there's more than one, matching their
   // existing visibility). PopupCard/PopupWindow (xdg-popup) never receives
   // key events unless a click already routed focus through the parent
@@ -42,10 +46,10 @@ BarWidget {
   // specifically to grab focus on open instead.
   property int cursorIndex: 0
   property bool cursorActive: false
-  readonly property int startCliampIndex: 3
-  readonly property int sourceBaseIndex: cliampRunning ? 3 : 4
+  readonly property int openCliampIndex: 3
+  readonly property int sourceBaseIndex: 4
   readonly property int sourceCount: sourcePlayers.length > 1 ? sourcePlayers.length : 0
-  readonly property int cursorCount: 3 + (cliampRunning ? 0 : 1) + sourceCount
+  readonly property int cursorCount: 4 + sourceCount
 
   onPopupOpenChanged: {
     if (!popupOpen) return
@@ -80,8 +84,9 @@ BarWidget {
         root.mediaService.runAction("next", false, root.mediaService.playerKey(root.activePlayer))
       return
     }
-    if (!root.cliampRunning && i === root.startCliampIndex) {
-      root.startCliamp()
+    if (i === root.openCliampIndex) {
+      root.openCliamp()
+      root.close()
       return
     }
     var sourceIndex = i - root.sourceBaseIndex
@@ -190,7 +195,7 @@ BarWidget {
 
     onClicked: function(mouse) {
       // Right click always opens the popup -- it's the only way to reach the
-      // Start Cliamp button when nothing is playing yet. Left/middle click
+      // Open Cliamp button when nothing is playing yet. Left/middle click
       // still need a real player to act on.
       if (mouse.button === Qt.RightButton) {
         root.popupOpen = !root.popupOpen
@@ -343,14 +348,13 @@ BarWidget {
       }
 
       Button {
-        text: "Start Cliamp"
-        visible: !root.cliampRunning
+        text: "Open Cliamp"
         foreground: root.bar.foreground
         horizontalPadding: Style.spacing.controlPaddingX
         verticalPadding: Style.spacing.controlPaddingY
         width: parent.width
-        hasCursor: root.cursorActive && root.cursorIndex === root.startCliampIndex
-        onClicked: root.startCliamp()
+        hasCursor: root.cursorActive && root.cursorIndex === root.openCliampIndex
+        onClicked: { root.openCliamp(); root.close() }
       }
 
       PanelSeparator {

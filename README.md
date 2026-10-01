@@ -7,12 +7,15 @@ keyboard use.
 
 - **Always on the bar**, even with nothing playing, so there is something to
   click to start music from cold.
-- **Start Cliamp** button in the popup while Cliamp is not running
-  (`cliamp -d`).
+- **Open Cliamp** button in the popup: opens (or focuses) a terminal with
+  Cliamp's full TUI, to switch stations and so on. Cliamp itself runs in a
+  background tmux session (`cliamp-session`, needs `tmux`), so closing the
+  window leaves the music playing; quitting Cliamp (`q`) stops it. A running
+  `cliamp -d` is replaced by the session, since a TUI can't attach to it.
 - **Right click always opens the popup**; left and middle click still control
   the active player.
 - **Keyboard navigation in the popup**: arrows move over previous / play-pause
-  / next, the Start Cliamp button and the player list; Enter activates, Escape
+  / next, the Open Cliamp button and the player list; Enter activates, Escape
   closes. The popup grabs keyboard focus, so this also works when it is
   opened with the `SUPER+CTRL+<n>` panel hotkey.
 - **Quieter bar**: the scrolling track title appears only while the pointer is

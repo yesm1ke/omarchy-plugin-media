@@ -1,0 +1,52 @@
+#!/bin/bash
+# Keep Cliamp's full TUI running in a background tmux session, so its window
+# can be opened to switch stations and then closed without stopping playback.
+#
+#   cliamp-session start   start the background session if it isn't running
+#   cliamp-session open    start it if needed, then open (or focus) a window on it
+#
+# `cliamp -d` would also play in the background, but a TUI can't attach to it:
+# both want the same IPC socket, so a second `cliamp` refuses to start.
+# Closing the window only detaches tmux. Quitting Cliamp itself (q) stops it.
+
+set -euo pipefail
+
+SOCKET=cliamp
+SESSION=cliamp
+APP_ID=org.omarchy.cliamp
+
+tm() { tmux -L "$SOCKET" "$@"; }
+
+start() {
+  tm has-session -t "$SESSION" 2>/dev/null && return
+
+  # A headless `cliamp -d` (or a Cliamp outside this session) holds the IPC
+  # socket; stop it and let the session take over, resuming where it was.
+  if pgrep -x -u "$UID" cliamp >/dev/null; then
+    pkill -x -u "$UID" cliamp || true
+    for _ in $(seq 50); do
+      pgrep -x -u "$UID" cliamp >/dev/null || break
+      sleep 0.1
+    done
+  fi
+
+  # Own systemd scope, so the session outlives whatever launched it (the bar,
+  # or the terminal window that is about to attach).
+  systemd-run --user --scope --quiet --collect --unit="cliamp-session-$$" \
+    tmux -L "$SOCKET" -f /dev/null new-session -d -s "$SESSION" -x 120 -y 36 \
+      cliamp --auto-play
+  tm set-option -g status off
+  tm set-option -g escape-time 0
+}
+
+open() {
+  start
+  exec omarchy-launch-or-focus "$APP_ID" \
+    "omarchy-launch-tui --app-id=$APP_ID tmux -L $SOCKET attach-session -t $SESSION"
+}
+
+case "${1:-open}" in
+  start) start ;;
+  open) open ;;
+  *) echo "usage: ${0##*/} [start|open]" >&2; exit 2 ;;
+esac
