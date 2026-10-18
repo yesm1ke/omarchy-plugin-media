@@ -1,5 +1,7 @@
 # Media for the Omarchy bar, with Cliamp
 
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-support-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/mike_g)
+
 The stock Omarchy media widget reworked around the Cliamp terminal player and
 keyboard use.
 
