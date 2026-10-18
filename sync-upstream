@@ -41,15 +41,26 @@ if ! git_repo rev-parse --verify -q refs/heads/upstream >/dev/null; then
   git_repo branch -q upstream origin/upstream
 fi
 
-# The stock plugin owns a directory with a manifest.json carrying its id.
-stock_dir=""
-while IFS= read -r manifest; do
-  if [[ $(jq -r '.id // empty' "$manifest" 2>/dev/null) == "$source_id" ]]; then
-    stock_dir=$(dirname "$manifest")
-    break
+# Where the stock plugin lives, as Omarchy's own `omarchy plugin clone` finds it:
+# either a directory of its own (manifest.json, copied whole) or a widget among
+# others in bar/widgets (<Name>.manifest.json; its entry points and clonePaths
+# are copied, the manifest as manifest.json).
+command -v omarchy-plugin-catalog >/dev/null || die "omarchy-plugin-catalog not found"
+IFS=$'\t' read -r stock_dir stock_manifest < <(omarchy-plugin-catalog | jq -r --arg id "$source_id" '
+  .[] | select(.firstParty and .id == $id) | [.sourceDir, .manifestPath] | @tsv') || true
+[[ -n ${stock_dir:-} && -f ${stock_manifest:-} ]] || die "stock plugin $source_id not found"
+
+# "<source path>\t<path in this repo>" for every stock file.
+stock_files() {
+  if [[ ${stock_manifest##*/} == manifest.json ]]; then
+    (cd "$stock_dir" && find . -type f | sed 's|^\./||' | sort | awk '{print $0 "\t" $0}')
+  else
+    printf '%s\t%s\n' "${stock_manifest##*/}" manifest.json
+    jq -r '[(.entryPoints[] | {source: ., target: .}),
+            (.omarchy.clonePaths[]? | {source: .source, target: .target})]
+           | unique_by(.target)[] | [.source, .target] | @tsv' "$stock_manifest"
   fi
-done < <(find "$stock_root" -name manifest.json)
-[[ -n $stock_dir ]] || die "stock plugin $source_id not found under $stock_root"
+}
 
 version=$(pacman -Q omarchy 2>/dev/null | awk '{print $2}' || true)
 version=${version:-unknown}
@@ -60,13 +71,14 @@ scratch_index=$(mktemp)
 trap 'rm -f "$scratch_index"' EXIT
 export GIT_INDEX_FILE=$scratch_index
 git_repo read-tree --empty
-while IFS= read -r -d '' file; do
-  rel=${file#"$stock_dir"/}
+while IFS=$'\t' read -r src rel; do
+  file=$stock_dir/$src
+  [[ -f $file ]] || die "stock file missing: $file"
   blob=$(git_repo hash-object -w -- "$file")
   mode=100644
   [[ -x $file ]] && mode=100755
   git_repo update-index --add --cacheinfo "$mode,$blob,$rel"
-done < <(find "$stock_dir" -type f -print0 | sort -z)
+done < <(stock_files)
 stock_tree=$(git_repo write-tree)
 unset GIT_INDEX_FILE
 
